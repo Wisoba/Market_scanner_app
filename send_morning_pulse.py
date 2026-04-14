@@ -18,7 +18,7 @@ from market_scan_app import (
 )
 
 
-APP_DIR = Path("/Users/moseswilling/Documents/New project")
+APP_DIR = Path(__file__).resolve().parent
 ENV_PATH = APP_DIR / ".market_scan_env"
 
 

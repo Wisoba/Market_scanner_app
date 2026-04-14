@@ -16,7 +16,7 @@ from delivery import send_notification
 from market_reading_engine_v2 import MarketReadingEngine, fetch_yfinance_watchlist
 
 
-APP_DIR = Path("/Users/moseswilling/Documents/New project")
+APP_DIR = Path(__file__).resolve().parent
 DB_PATH = APP_DIR / "market_scan_users.db"
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
 app = FastAPI(title="Market Hotness Scanner")
