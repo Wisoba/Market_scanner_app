@@ -1,0 +1,7 @@
+.market_scan_env
+market_scan_users.db
+__pycache__/
+*.pyc
+launchd_morning_pulse.out
+launchd_morning_pulse.err
+morning_pulse.log

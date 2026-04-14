@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Market Scanner Login</title>
+  <style>
+    :root {
+      --bg: #f5efe3;
+      --card: rgba(255, 251, 244, 0.9);
+      --ink: #16120e;
+      --muted: #6d655d;
+      --line: #d8c8b6;
+      --green: #1f7a4c;
+      --shadow: 0 20px 50px rgba(52, 31, 9, 0.10);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      font-family: Georgia, "Times New Roman", serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(210,143,27,0.12), transparent 22%),
+        radial-gradient(circle at bottom right, rgba(31,122,76,0.10), transparent 24%),
+        var(--bg);
+    }
+    .shell {
+      width: min(980px, 100%);
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 16px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      padding: 24px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+    }
+    h1, h2, p { margin: 0; }
+    .eyebrow {
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+    h1 {
+      font-size: clamp(38px, 5vw, 62px);
+      line-height: 0.92;
+      margin-bottom: 12px;
+    }
+    .sub {
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1.4;
+      max-width: 34ch;
+    }
+    .bullet-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 22px;
+    }
+    .bullet {
+      border-radius: 18px;
+      background: rgba(255,255,255,0.76);
+      border: 1px solid var(--line);
+      padding: 14px;
+    }
+    form {
+      display: grid;
+      gap: 12px;
+    }
+    input, button {
+      border-radius: 16px;
+      padding: 14px 16px;
+      font: inherit;
+      border: 1px solid var(--line);
+    }
+    input {
+      background: #fff;
+      color: var(--ink);
+    }
+    button {
+      background: var(--ink);
+      color: white;
+      border: none;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .checkrow {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .note {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
+      margin-top: 10px;
+    }
+    @media (max-width: 860px) {
+      .shell { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="card">
+      <div class="eyebrow">Market Intelligence</div>
+      <h1>Start your own pulse.</h1>
+      <p class="sub">Log in with your email or phone, save your watchlist, and turn the scanner into a 5am premarket ritual that brings you back each morning.</p>
+      <div class="bullet-list">
+        <div class="bullet"><strong>Live trust layer.</strong> The app shows the tape and the model side by side.</div>
+        <div class="bullet"><strong>Morning retention loop.</strong> Users get a clean pulse before the market wakes up.</div>
+        <div class="bullet"><strong>Personal watchlist memory.</strong> No more retyping the same basket every session.</div>
+      </div>
+    </section>
+    <section class="card">
+      <div class="eyebrow">Login / Signup</div>
+      <form method="get" action="/enter">
+        <input type="text" name="identifier" placeholder="you@example.com or +12165551234" required>
+        <input type="text" name="watchlist" value="{{ default_symbols }}" placeholder="NVDA,AAPL,MSFT,META,TSLA,AMD,AMZN,QQQ,SPY">
+        <input type="time" name="notify_at" value="05:00">
+        <label class="checkrow">
+          <input type="checkbox" name="alerts_enabled" checked>
+          Send a 5am premarket pulse
+        </label>
+        <button type="submit">Enter Scanner</button>
+      </form>
+      <div class="note">
+        For now, this is a lightweight product login that remembers the contact you choose and uses it as the future delivery target for email or SMS alerts.
+      </div>
+    </section>
+  </div>
+</body>
+</html>

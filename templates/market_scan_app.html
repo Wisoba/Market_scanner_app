@@ -1,0 +1,912 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Market Hotness Scanner</title>
+  <style>
+    :root {
+      --bg: #f5efe3;
+      --card: rgba(255, 251, 244, 0.88);
+      --ink: #16120e;
+      --muted: #6d655d;
+      --line: #d8c8b6;
+      --green: #1f7a4c;
+      --red: #a23b32;
+      --gold: #bc7b12;
+      --blue: #254f87;
+      --shadow: 0 20px 50px rgba(52, 31, 9, 0.10);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      background:
+        radial-gradient(circle at top left, rgba(210,143,27,0.11), transparent 22%),
+        radial-gradient(circle at 80% 18%, rgba(37,79,135,0.08), transparent 20%),
+        radial-gradient(circle at bottom right, rgba(31,122,76,0.10), transparent 24%),
+        var(--bg);
+      color: var(--ink);
+      min-height: 100vh;
+    }
+    .wrap {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 24px 18px 56px;
+    }
+    .hero {
+      display: grid;
+      gap: 18px;
+      grid-template-columns: 1.5fr 1fr;
+      align-items: stretch;
+      margin-bottom: 20px;
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 18px;
+      flex-wrap: wrap;
+    }
+    .brand {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .brand .name {
+      font-size: 18px;
+      font-weight: 700;
+    }
+    .account {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .account-chip, .link-btn {
+      border-radius: 999px;
+      padding: 10px 14px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.82);
+      color: var(--ink);
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .card {
+      background: var(--card);
+      backdrop-filter: blur(18px);
+      border: 1px solid rgba(216, 200, 182, 0.92);
+      border-radius: 22px;
+      box-shadow: var(--shadow);
+      padding: 18px;
+    }
+    h1, h2, h3, p { margin: 0; }
+    .eyebrow {
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+    .hero h1 {
+      font-size: clamp(34px, 5vw, 58px);
+      line-height: 0.95;
+      margin-bottom: 10px;
+    }
+    .sub {
+      color: var(--muted);
+      font-size: 18px;
+      max-width: 40ch;
+      line-height: 1.35;
+    }
+    .worldline {
+      margin-top: 14px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .form-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 18px;
+    }
+    input, button {
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      padding: 12px 16px;
+      font: inherit;
+    }
+    input {
+      background: #fff;
+      color: var(--ink);
+      min-width: 180px;
+      flex: 1;
+    }
+    button {
+      background: var(--ink);
+      color: white;
+      cursor: pointer;
+      border: none;
+      font-weight: 700;
+    }
+    .leader-badge {
+      display: inline-block;
+      background: rgba(210,143,27,0.12);
+      color: var(--gold);
+      border: 1px solid rgba(210,143,27,0.2);
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+    .leader-symbol {
+      font-size: 58px;
+      line-height: 0.9;
+      margin-bottom: 8px;
+    }
+    .leader-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .pill {
+      border-radius: 999px;
+      padding: 7px 12px;
+      font-size: 13px;
+      font-weight: 700;
+      border: 1px solid var(--line);
+      background: white;
+    }
+    .pill.long { color: var(--green); }
+    .pill.short { color: var(--red); }
+    .pill.avoid { color: var(--gold); }
+    .grid-4 {
+      display: grid;
+      gap: 14px;
+      grid-template-columns: repeat(4, 1fr);
+      margin: 18px 0 22px;
+    }
+    .metric {
+      background: rgba(255,255,255,0.72);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 16px;
+    }
+    .metric .k {
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .metric .v {
+      font-size: 28px;
+      font-weight: 700;
+    }
+    .triple {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin-bottom: 22px;
+    }
+    .experience-zone {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 14px;
+      margin-bottom: 22px;
+    }
+    .ticker-strip {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .ticker-chip {
+      background: rgba(255,255,255,0.7);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 12px;
+      cursor: pointer;
+      transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease;
+    }
+    .ticker-chip:hover, .ticker-chip.active {
+      transform: translateY(-2px);
+      box-shadow: 0 14px 24px rgba(27, 20, 12, 0.12);
+      border-color: rgba(37,79,135,0.35);
+    }
+    .ticker-chip .t {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .ticker-chip .m {
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .detail-grid {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 14px;
+      align-items: stretch;
+    }
+    .detail-hero {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 340px;
+    }
+    .detail-big {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+    }
+    .detail-symbol {
+      font-size: 52px;
+      line-height: 0.9;
+      font-weight: 700;
+    }
+    .detail-price {
+      font-size: 18px;
+      color: var(--muted);
+    }
+    .spark-wrap {
+      margin-top: auto;
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.65), rgba(245,239,227,0.95));
+      border: 1px solid var(--line);
+      padding: 12px;
+    }
+    #sparkline {
+      width: 100%;
+      height: 180px;
+      display: block;
+    }
+    .signal-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+    }
+    .stacked-panel {
+      display: grid;
+      gap: 14px;
+    }
+    .panel-shell {
+      border-radius: 20px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.58);
+      padding: 12px;
+    }
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+      gap: 12px;
+    }
+    .panel-head .title {
+      font-size: 16px;
+      font-weight: 700;
+    }
+    .panel-head .meta {
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .signal-box {
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.72);
+      padding: 12px;
+    }
+    .signal-box .k {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 8px;
+    }
+    .signal-box .v {
+      font-size: 24px;
+      font-weight: 700;
+    }
+    .signal-box .s {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+    .tape-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+    }
+    .tape-box {
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.82);
+      padding: 12px;
+    }
+    .tape-box .k {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 8px;
+    }
+    .tape-box .v {
+      font-size: 24px;
+      font-weight: 700;
+    }
+    .tape-box .s {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+    .tape-box.up .v { color: var(--green); }
+    .tape-box.down .v { color: var(--red); }
+    .tape-box.neutral .v { color: var(--blue); }
+    .tape-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .tape-pill {
+      border-radius: 999px;
+      padding: 7px 10px;
+      background: rgba(255,255,255,0.92);
+      border: 1px solid var(--line);
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .bucket h2 {
+      font-size: 20px;
+      margin-bottom: 12px;
+    }
+    .list {
+      display: grid;
+      gap: 10px;
+    }
+    .row {
+      background: rgba(255,255,255,0.72);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 12px;
+    }
+    .row-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+    .symbol {
+      font-size: 24px;
+      font-weight: 700;
+    }
+    .reason {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.3;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      text-align: left;
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--line);
+    }
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .footer-note {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .notif-card {
+      margin-bottom: 22px;
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 14px;
+    }
+    .copybox {
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.75);
+      padding: 14px;
+      font-size: 16px;
+      line-height: 1.5;
+    }
+    .pref-form {
+      display: grid;
+      gap: 10px;
+    }
+    .checkrow {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .status-banner {
+      margin-top: 12px;
+      border-radius: 14px;
+      padding: 12px 14px;
+      font-size: 14px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.78);
+    }
+    .status-banner.ok {
+      color: var(--green);
+      border-color: rgba(31,122,76,0.24);
+      background: rgba(31,122,76,0.08);
+    }
+    .status-banner.bad {
+      color: var(--red);
+      border-color: rgba(162,59,50,0.24);
+      background: rgba(162,59,50,0.08);
+    }
+    .reason-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .reason-pill {
+      border-radius: 999px;
+      padding: 7px 11px;
+      background: rgba(255,255,255,0.9);
+      border: 1px solid var(--line);
+      font-size: 13px;
+      color: var(--muted);
+    }
+    @media (max-width: 980px) {
+      .hero, .grid-4, .triple, .experience-zone, .detail-grid, .notif-card { grid-template-columns: 1fr; }
+      .leader-symbol { font-size: 42px; }
+      .detail-symbol { font-size: 40px; }
+      .wrap { padding: 14px 14px 42px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="topbar">
+      <div class="brand">
+        <div class="eyebrow" style="margin-bottom: 0;">Market Scanner</div>
+        <div class="name">Morning pulse, live trust layer, and watchlist memory.</div>
+      </div>
+      <div class="account">
+        <span class="account-chip">{{ user.identifier }}</span>
+        <span class="account-chip">{{ user.channel|upper }} @ {{ user.notify_at }}</span>
+        <a class="link-btn" href="/logout">Log out</a>
+      </div>
+    </section>
+
+    <section class="hero">
+      <div class="card">
+        <div class="eyebrow">Market Intelligence</div>
+        <h1>Stop scanning noise.</h1>
+        <p class="sub">Find what is hot, what is clean, and what deserves your attention without staring at charts all day.</p>
+        <div class="worldline">
+          <span class="pill">Interactive watchtower</span>
+          <span class="pill">Daily market briefing</span>
+          <span class="pill">Action over noise</span>
+        </div>
+        <form method="get" class="form-row">
+          <input type="text" name="symbols" value="{{ symbols }}" placeholder="NVDA,AAPL,MSFT,META,TSLA,AMD,AMZN,QQQ,SPY">
+          <input type="number" name="months" value="{{ months }}" min="1" max="24" style="max-width: 140px;">
+          <button type="submit">Run Scan</button>
+        </form>
+      </div>
+
+      <div class="card">
+        {% if leader %}
+          <div class="leader-badge">Leader</div>
+          <div class="leader-symbol">{{ leader.symbol }}</div>
+          <p class="sub">{{ leader.reason }}</p>
+          <div class="leader-meta">
+            <span class="pill {% if leader.label == 'LONG' %}long{% elif leader.label == 'SHORT' %}short{% else %}avoid{% endif %}">{{ leader.label }}</span>
+            <span class="pill">Grade {{ leader.setup_grade }}</span>
+            <span class="pill">Hotness {{ '%.3f'|format(leader.hotness) }}</span>
+            <span class="pill">Confidence {{ '%.3f'|format(leader.confidence) }}</span>
+          </div>
+        {% else %}
+          <div class="leader-badge">No Data</div>
+          <div class="leader-symbol">--</div>
+          <p class="sub">No symbols returned enough data to score.</p>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="grid-4">
+      <div class="metric">
+        <div class="k">Market Stance</div>
+        <div class="v">{{ summary.market_stance }}</div>
+      </div>
+      <div class="metric">
+        <div class="k">Top Pick</div>
+        <div class="v">{{ summary.top_pick or 'None' }}</div>
+      </div>
+      <div class="metric">
+        <div class="k">Runner-Up</div>
+        <div class="v">{{ summary.runner_up or 'None' }}</div>
+      </div>
+      <div class="metric">
+        <div class="k">Best Short</div>
+        <div class="v">{{ summary.best_short or 'None' }}</div>
+      </div>
+    </section>
+
+    <section class="notif-card">
+      <div class="card">
+        <div class="eyebrow">5AM Alert Preview</div>
+        <div class="copybox">
+          {{ notification_preview.message if notification_preview else 'No morning pulse is ready yet.' }}
+        </div>
+        <div class="footer-note">
+          Delivery target: {{ notification_preview.destination if notification_preview else '--' }} • Channel: {{ notification_preview.channel if notification_preview else '--' }} • Enabled: {{ 'Yes' if notification_preview and notification_preview.enabled else 'No' }}
+        </div>
+        <div style="margin-top: 12px;">
+          <a class="link-btn" href="/send-test-alert">Send Test Pulse</a>
+        </div>
+        {% if delivery_status %}
+          <div class="status-banner {% if delivery_status.startswith('sent:') %}ok{% else %}bad{% endif %}">
+            {{ delivery_status }}
+          </div>
+        {% endif %}
+      </div>
+      <div class="card">
+        <div class="eyebrow">Alert Settings</div>
+        <form method="get" action="/preferences" class="pref-form">
+          <input type="text" name="watchlist" value="{{ symbols }}" placeholder="NVDA,AAPL,MSFT,META,TSLA,AMD,AMZN,QQQ,SPY">
+          <input type="time" name="notify_at" value="{{ user.notify_at }}">
+          <label class="checkrow">
+            <input type="checkbox" name="alerts_enabled" {% if user.alerts_enabled %}checked{% endif %}>
+            Send the premarket pulse every morning
+          </label>
+          <button type="submit">Save Preferences</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="card" style="margin-bottom: 22px;">
+      <div class="eyebrow">Live Experience</div>
+      <div class="ticker-strip">
+        {% for row in detail_cards %}
+          <button type="button"
+                  class="ticker-chip {% if leader and row.symbol == leader.symbol %}active{% endif %}"
+                  data-symbol="{{ row.symbol }}">
+            <div class="t">{{ row.symbol }}</div>
+            <div class="m">{{ row.label }} • {{ row.setup_grade }}</div>
+          </button>
+        {% endfor %}
+      </div>
+      <div class="detail-grid">
+        <div class="detail-hero">
+          <div class="detail-big">
+            <div>
+              <div class="eyebrow">Selected ticker</div>
+              <div id="detail-symbol" class="detail-symbol">{{ leader.symbol if leader else '--' }}</div>
+              <div id="detail-price" class="detail-price"></div>
+            </div>
+            <div class="leader-meta" id="detail-pills"></div>
+          </div>
+          <div class="reason-list" id="detail-reasons"></div>
+          <div class="spark-wrap">
+            <canvas id="sparkline"></canvas>
+          </div>
+        </div>
+        <div class="stacked-panel">
+          <div class="panel-shell">
+            <div class="panel-head">
+              <div class="title">Live Tape Sync</div>
+              <div class="meta">Trust Layer</div>
+            </div>
+            <div class="tape-grid">
+              <div class="tape-box" id="tape-live-price-box"><div class="k">Live Price</div><div class="v" id="tape-live-price">--</div><div class="s" id="tape-day-range">--</div></div>
+              <div class="tape-box" id="tape-day-move-box"><div class="k">Day Move</div><div class="v" id="tape-day-move">--</div><div class="s" id="tape-from-open">--</div></div>
+              <div class="tape-box" id="tape-velocity-box"><div class="k">5m Velocity</div><div class="v" id="tape-velocity">--</div><div class="s" id="tape-velocity-15">--</div></div>
+              <div class="tape-box" id="tape-momentum-box"><div class="k">30m Momentum</div><div class="v" id="tape-momentum">--</div><div class="s" id="tape-accel">--</div></div>
+              <div class="tape-box" id="tape-range-box"><div class="k">Range Position</div><div class="v" id="tape-range-position">--</div><div class="s">Position inside today's range</div></div>
+              <div class="tape-box" id="tape-vwap-box"><div class="k">VWAP Drift</div><div class="v" id="tape-vwap">--</div><div class="s" id="tape-volume">--</div></div>
+            </div>
+            <div class="tape-strip" id="tape-flags"></div>
+          </div>
+          <div class="panel-shell">
+            <div class="panel-head">
+              <div class="title">Model Read</div>
+              <div class="meta">Scanner Core</div>
+            </div>
+            <div class="signal-grid">
+              <div class="signal-box"><div class="k">Hotness</div><div class="v" id="box-hotness">--</div></div>
+              <div class="signal-box"><div class="k">Confidence</div><div class="v" id="box-confidence">--</div></div>
+              <div class="signal-box"><div class="k">Signal Strength</div><div class="v" id="box-signal">--</div><div class="s">Overall pressure behind the read</div></div>
+              <div class="signal-box"><div class="k">Trend Score</div><div class="v" id="box-trend">--</div><div class="s">Directional structure over recent history</div></div>
+              <div class="signal-box"><div class="k">Breakout Score</div><div class="v" id="box-breakout">--</div><div class="s">Breakout quality and follow-through</div></div>
+              <div class="signal-box"><div class="k">Chop Ratio</div><div class="v" id="box-chop">--</div><div class="s">Lower is cleaner</div></div>
+              <div class="signal-box"><div class="k">ATR</div><div class="v" id="box-atr">--</div><div class="s">Average true range</div></div>
+              <div class="signal-box"><div class="k">Suggested Shares</div><div class="v" id="box-shares">--</div><div class="s">Simple risk sizing estimate</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="triple">
+      <div class="card bucket">
+        <h2>Best Longs</h2>
+        <div class="list">
+          {% if longs %}
+            {% for row in longs %}
+              <div class="row">
+                <div class="row-top">
+                  <div class="symbol">{{ row.symbol }}</div>
+                  <span class="pill long">{{ row.setup_grade }}</span>
+                </div>
+                <div class="reason">Hotness {{ '%.3f'|format(row.hotness) }} • Confidence {{ '%.3f'|format(row.confidence) }} • Suggested shares {{ row.suggested_shares }}</div>
+              </div>
+            {% endfor %}
+          {% else %}
+            <div class="reason">No long setups right now.</div>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="card bucket">
+        <h2>Best Shorts</h2>
+        <div class="list">
+          {% if shorts %}
+            {% for row in shorts %}
+              <div class="row">
+                <div class="row-top">
+                  <div class="symbol">{{ row.symbol }}</div>
+                  <span class="pill short">{{ row.setup_grade }}</span>
+                </div>
+                <div class="reason">Hotness {{ '%.3f'|format(row.hotness) }} • Confidence {{ '%.3f'|format(row.confidence) }} • Suggested shares {{ row.suggested_shares }}</div>
+              </div>
+            {% endfor %}
+          {% else %}
+            <div class="reason">No short setups right now.</div>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="card bucket">
+        <h2>Avoid</h2>
+        <div class="list">
+          {% if avoids %}
+            {% for row in avoids %}
+              <div class="row">
+                <div class="row-top">
+                  <div class="symbol">{{ row.symbol }}</div>
+                  <span class="pill avoid">{{ row.setup_grade }}</span>
+                </div>
+                <div class="reason">{{ row.reason }}</div>
+              </div>
+            {% endfor %}
+          {% else %}
+            <div class="reason">Nothing flagged as avoid.</div>
+          {% endif %}
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2 style="margin-bottom: 12px;">Full Watchlist</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Rank</th>
+            <th>Symbol</th>
+            <th>Label</th>
+            <th>Grade</th>
+            <th>Hotness</th>
+            <th>Confidence</th>
+            <th>Signal</th>
+            <th>Trend</th>
+            <th>Breakout</th>
+            <th>Chop</th>
+            <th>Shares</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in table %}
+            <tr>
+              <td>{{ row.rank }}</td>
+              <td><strong>{{ row.symbol }}</strong></td>
+              <td>{{ row.label }}</td>
+              <td>{{ row.setup_grade }}</td>
+              <td>{{ '%.3f'|format(row.hotness) }}</td>
+              <td>{{ '%.3f'|format(row.confidence) }}</td>
+              <td>{{ '%.3f'|format(row.signal_strength) }}</td>
+              <td>{{ '%.3f'|format(row.trend_score) }}</td>
+              <td>{{ '%.3f'|format(row.breakout_score) }}</td>
+              <td>{{ '%.3f'|format(row.chop_ratio) }}</td>
+              <td>{{ row.suggested_shares }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <div class="footer-note">
+        This app surfaces clean candidates and noisy traps. It is a decision filter, not a guaranteed-profit oracle.
+      </div>
+    </section>
+  </div>
+  <script>
+    const detailCards = {{ detail_cards_json|safe }};
+    const detailMap = Object.fromEntries(detailCards.map(card => [card.symbol, card]));
+    const chips = Array.from(document.querySelectorAll('.ticker-chip'));
+
+    function drawSparkline(values, label) {
+      const canvas = document.getElementById('sparkline');
+      const ctx = canvas.getContext('2d');
+      const dpr = window.devicePixelRatio || 1;
+      const width = canvas.clientWidth || 500;
+      const height = canvas.clientHeight || 180;
+      canvas.width = width * dpr;
+      canvas.height = height * dpr;
+      ctx.scale(dpr, dpr);
+      ctx.clearRect(0, 0, width, height);
+
+      if (!values || values.length < 2) return;
+
+      const min = Math.min(...values);
+      const max = Math.max(...values);
+      const pad = 16;
+      const range = Math.max(max - min, 1e-6);
+      const points = values.map((v, i) => {
+        const x = pad + (i / (values.length - 1)) * (width - 2 * pad);
+        const y = height - pad - ((v - min) / range) * (height - 2 * pad);
+        return [x, y];
+      });
+
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = label === 'LONG' ? '#1f7a4c' : (label === 'SHORT' ? '#a23b32' : '#bc7b12');
+      ctx.beginPath();
+      points.forEach(([x, y], i) => {
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      const last = points[points.length - 1];
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.beginPath();
+      ctx.arc(last[0], last[1], 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function renderPills(card) {
+      const el = document.getElementById('detail-pills');
+      const cls = card.label === 'LONG' ? 'long' : (card.label === 'SHORT' ? 'short' : 'avoid');
+      el.innerHTML = `
+        <span class="pill ${cls}">${card.label}</span>
+        <span class="pill">Grade ${card.setup_grade}</span>
+        <span class="pill">1D ${card.change_1d_pct}%</span>
+        <span class="pill">5D ${card.change_5d_pct}%</span>
+      `;
+    }
+
+    function renderReasons(card) {
+      const el = document.getElementById('detail-reasons');
+      el.innerHTML = card.reasons.map(r => `<span class="reason-pill">${r}</span>`).join('');
+    }
+
+    function toneClass(value, invert = false) {
+      if (value == null || Number.isNaN(value)) return 'neutral';
+      if (invert) {
+        return value <= 0 ? 'up' : 'down';
+      }
+      if (value > 0) return 'up';
+      if (value < 0) return 'down';
+      return 'neutral';
+    }
+
+    function setTone(id, value, invert = false) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.classList.remove('up', 'down', 'neutral');
+      el.classList.add(toneClass(value, invert));
+    }
+
+    function fmtSigned(value, suffix = '') {
+      if (value == null || Number.isNaN(value)) return '--';
+      const prefix = value > 0 ? '+' : '';
+      return `${prefix}${Number(value).toFixed(2)}${suffix}`;
+    }
+
+    function renderLiveTape(card) {
+      const live = card.live;
+      document.getElementById('tape-flags').innerHTML = '';
+      if (!live) {
+        document.getElementById('tape-live-price').textContent = '--';
+        document.getElementById('tape-day-range').textContent = 'No live tape available';
+        document.getElementById('tape-day-move').textContent = '--';
+        document.getElementById('tape-from-open').textContent = '--';
+        document.getElementById('tape-velocity').textContent = '--';
+        document.getElementById('tape-velocity-15').textContent = '--';
+        document.getElementById('tape-momentum').textContent = '--';
+        document.getElementById('tape-accel').textContent = '--';
+        document.getElementById('tape-range-position').textContent = '--';
+        document.getElementById('tape-vwap').textContent = '--';
+        document.getElementById('tape-volume').textContent = '--';
+        return;
+      }
+
+      document.getElementById('tape-live-price').textContent = `$${live.live_price.toFixed(2)}`;
+      document.getElementById('tape-day-range').textContent = `Low $${live.day_low.toFixed(2)} • High $${live.day_high.toFixed(2)}`;
+      document.getElementById('tape-day-move').textContent = fmtSigned(live.day_move_pct, '%');
+      document.getElementById('tape-from-open').textContent = `${fmtSigned(live.from_open)} from open`;
+      document.getElementById('tape-velocity').textContent = fmtSigned(live.velocity_5m);
+      document.getElementById('tape-velocity-15').textContent = `${fmtSigned(live.velocity_15m)} over 15m`;
+      document.getElementById('tape-momentum').textContent = fmtSigned(live.momentum_30m);
+      document.getElementById('tape-accel').textContent = `${fmtSigned(live.accel_pct, '%')} accel`;
+      document.getElementById('tape-range-position').textContent = `${live.range_position_pct.toFixed(1)}%`;
+      document.getElementById('tape-vwap').textContent = live.vwap_drift_pct == null ? '--' : fmtSigned(live.vwap_drift_pct, '%');
+      document.getElementById('tape-volume').textContent = `Last bar volume ${live.latest_volume.toLocaleString()}`;
+
+      setTone('tape-live-price-box', live.day_move_pct);
+      setTone('tape-day-move-box', live.day_move_pct);
+      setTone('tape-velocity-box', live.velocity_5m);
+      setTone('tape-momentum-box', live.momentum_30m);
+      setTone('tape-range-box', live.range_position_pct - 50.0);
+      setTone('tape-vwap-box', live.vwap_drift_pct);
+
+      const flags = [];
+      if (live.day_move_pct > 1) flags.push('Tape is pressing up');
+      if (live.day_move_pct < -1) flags.push('Tape is under pressure');
+      if (live.range_position_pct >= 75) flags.push('Trading near day highs');
+      if (live.range_position_pct <= 25) flags.push('Trading near day lows');
+      if (Math.abs(live.velocity_5m) > 0.8) flags.push('Short-horizon move is sharp');
+      if (live.vwap_drift_pct != null && live.vwap_drift_pct > 0.5) flags.push('Holding above intraday value');
+      if (live.vwap_drift_pct != null && live.vwap_drift_pct < -0.5) flags.push('Below intraday value');
+      document.getElementById('tape-flags').innerHTML = flags.map(flag => `<span class="tape-pill">${flag}</span>`).join('');
+    }
+
+    function updateDetail(symbol) {
+      const card = detailMap[symbol];
+      if (!card) return;
+
+      document.getElementById('detail-symbol').textContent = card.symbol;
+      document.getElementById('detail-price').textContent = `$${card.close} • ${card.date}`;
+      document.getElementById('box-hotness').textContent = card.hotness.toFixed(3);
+      document.getElementById('box-confidence').textContent = card.confidence.toFixed(3);
+      document.getElementById('box-signal').textContent = card.signal_strength.toFixed(3);
+      document.getElementById('box-trend').textContent = card.trend_score.toFixed(3);
+      document.getElementById('box-breakout').textContent = card.breakout_score.toFixed(3);
+      document.getElementById('box-chop').textContent = card.chop_ratio.toFixed(3);
+      document.getElementById('box-atr').textContent = card.atr ? card.atr.toFixed(2) : '--';
+      document.getElementById('box-shares').textContent = card.suggested_shares;
+      renderPills(card);
+      renderReasons(card);
+      renderLiveTape(card);
+      drawSparkline(card.sparkline, card.label);
+
+      chips.forEach(chip => chip.classList.toggle('active', chip.dataset.symbol === symbol));
+    }
+
+    chips.forEach(chip => {
+      chip.addEventListener('click', () => updateDetail(chip.dataset.symbol));
+    });
+
+    if (detailCards.length) {
+      updateDetail(detailCards[0].symbol);
+      window.addEventListener('resize', () => updateDetail(document.querySelector('.ticker-chip.active')?.dataset.symbol || detailCards[0].symbol));
+    }
+  </script>
+</body>
+</html>
