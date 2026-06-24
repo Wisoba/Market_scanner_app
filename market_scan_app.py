@@ -258,11 +258,11 @@ _INTEL_CACHE: dict[str, tuple[datetime, IntelFeedResponse]] = {}
 
 
 def _snapshot_cache_seconds() -> int:
-    raw = os.environ.get("MARKET_SNAPSHOT_CACHE_SECONDS", "10")
+    raw = os.environ.get("MARKET_SNAPSHOT_CACHE_SECONDS", "180")
     try:
         return max(0, int(raw))
     except ValueError:
-        return 10
+        return 180
 
 
 class AlertRegistrationRequest(BaseModel):
@@ -2014,6 +2014,21 @@ def _live_now_snapshot(symbols: str | None, months: int, refresh_after_seconds: 
     if cache_ttl > 0:
         _LIVE_NOW_CACHE[cache_key] = (now, snapshot)
     return snapshot
+
+
+async def _prewarm_snapshot_loop() -> None:
+    """Keep the default /api/v1/now snapshot warm so no real user hits a cold 20s+ fetch."""
+    while True:
+        try:
+            await asyncio.to_thread(_live_now_snapshot, None, 6)
+        except Exception as exc:  # noqa: BLE001
+            print(f"snapshot prewarm error: {exc}")
+        await asyncio.sleep(max(30, _snapshot_cache_seconds() - 30))
+
+
+@app.on_event("startup")
+async def _start_snapshot_prewarm() -> None:
+    asyncio.create_task(_prewarm_snapshot_loop())
 
 
 @app.get("/api/v1/now", response_model=LiveNowResponse)
