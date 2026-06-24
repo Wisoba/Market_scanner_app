@@ -769,27 +769,48 @@ def _fetch_watchlist(symbol_list: list[str], months: int):
 
 def _fetch_intraday_table(symbol_list: list[str]) -> tuple[pd.DataFrame, str]:
     provider = _market_data_provider()
-    if provider != "alpaca":
-        return pd.DataFrame(columns=INTRADAY_TABLE_COLUMNS), "unavailable"
     interval = os.environ.get("INTRADAY_SCAN_INTERVAL", "1m")
-    # Try the configured feed first, then fall back to the free "iex" feed so
-    # intraday / Raw Heat isn't empty when "sip" (paid) isn't on the account.
-    feeds = [ALPACA_FEED] + (["iex"] if ALPACA_FEED != "iex" else [])
-    for feed in feeds:
-        try:
-            symbol_to_df = fetch_intraday_watchlist(
-                symbol_list,
-                provider="alpaca",
-                interval=interval,
-                days=5,
-                feed=feed,
-            )
-            table = daytrade_table(symbol_to_df)
-        except Exception as exc:  # noqa: BLE001
-            print(f"intraday fetch failed on feed={feed}: {exc}")
-            continue
+
+    if provider == "alpaca":
+        # Try the configured feed first, then fall back to the free "iex" feed so
+        # intraday / Raw Heat isn't empty when "sip" (paid) isn't on the account.
+        feeds = [ALPACA_FEED] + (["iex"] if ALPACA_FEED != "iex" else [])
+        for feed in feeds:
+            try:
+                symbol_to_df = fetch_intraday_watchlist(
+                    symbol_list,
+                    provider="alpaca",
+                    interval=interval,
+                    days=5,
+                    feed=feed,
+                )
+                table = daytrade_table(symbol_to_df)
+            except Exception as exc:  # noqa: BLE001
+                print(f"intraday fetch failed on feed={feed}: {exc}")
+                continue
+            if not table.empty:
+                return table, f"alpaca_{feed}"
+        print("intraday Alpaca feeds produced no rows; trying yfinance fallback")
+    else:
+        print(f"intraday provider={provider}; trying yfinance fallback")
+
+    try:
+        fallback_limit = max(5, int(os.environ.get("INTRADAY_YFINANCE_SYMBOL_LIMIT", "12")))
+    except ValueError:
+        fallback_limit = 12
+    fallback_interval = os.environ.get("INTRADAY_YFINANCE_INTERVAL", "5m").strip() or "5m"
+    try:
+        symbol_to_df = fetch_intraday_watchlist(
+            symbol_list[:fallback_limit],
+            provider="yfinance",
+            interval=fallback_interval,
+        )
+        table = daytrade_table(symbol_to_df)
+    except Exception as exc:  # noqa: BLE001
+        print(f"intraday yfinance fallback failed: {exc}")
+    else:
         if not table.empty:
-            return table, f"alpaca_{feed}"
+            return table, "yfinance"
     return pd.DataFrame(columns=INTRADAY_TABLE_COLUMNS), "unavailable"
 
 
