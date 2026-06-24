@@ -461,6 +461,35 @@
       border-color: rgba(162,59,50,0.24);
       background: rgba(162,59,50,0.08);
     }
+    .refresh-control {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.94);
+      border-radius: 999px;
+      padding: 8px 10px;
+      box-shadow: 0 12px 30px rgba(22,18,14,0.08);
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .refresh-control button {
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border-radius: 50%;
+      font-size: 16px;
+      line-height: 1;
+    }
+    .refresh-count {
+      min-width: 112px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
     .reason-list {
       display: flex;
       flex-wrap: wrap;
@@ -523,6 +552,7 @@
             <span class="pill">Grade {{ leader.setup_grade }}</span>
             <span class="pill">Hotness {{ '%.3f'|format(leader.hotness) }}</span>
             <span class="pill">Confidence {{ '%.3f'|format(leader.confidence) }}</span>
+            <span class="pill">Readability {{ '%.0f'|format(leader.readability) }} {{ leader.readability_label }}</span>
           </div>
         {% else %}
           <div class="leader-badge">No Data</div>
@@ -634,6 +664,7 @@
             <div class="signal-grid">
               <div class="signal-box"><div class="k">Hotness</div><div class="v" id="box-hotness">--</div></div>
               <div class="signal-box"><div class="k">Confidence</div><div class="v" id="box-confidence">--</div></div>
+              <div class="signal-box"><div class="k">Readability</div><div class="v" id="box-readability">--</div><div class="s">Clean vs chaotic structure</div></div>
               <div class="signal-box"><div class="k">Signal Strength</div><div class="v" id="box-signal">--</div><div class="s">Overall pressure behind the read</div></div>
               <div class="signal-box"><div class="k">Trend Score</div><div class="v" id="box-trend">--</div><div class="s">Directional structure over recent history</div></div>
               <div class="signal-box"><div class="k">Breakout Score</div><div class="v" id="box-breakout">--</div><div class="s">Breakout quality and follow-through</div></div>
@@ -657,7 +688,7 @@
                   <div class="symbol">{{ row.symbol }}</div>
                   <span class="pill long">{{ row.setup_grade }}</span>
                 </div>
-                <div class="reason">Hotness {{ '%.3f'|format(row.hotness) }} • Confidence {{ '%.3f'|format(row.confidence) }} • Suggested shares {{ row.suggested_shares }}</div>
+                <div class="reason">Hotness {{ '%.3f'|format(row.hotness) }} • Readability {{ '%.0f'|format(row.readability) }} {{ row.readability_label }} • Confidence {{ '%.3f'|format(row.confidence) }}</div>
               </div>
             {% endfor %}
           {% else %}
@@ -676,7 +707,7 @@
                   <div class="symbol">{{ row.symbol }}</div>
                   <span class="pill short">{{ row.setup_grade }}</span>
                 </div>
-                <div class="reason">Hotness {{ '%.3f'|format(row.hotness) }} • Confidence {{ '%.3f'|format(row.confidence) }} • Suggested shares {{ row.suggested_shares }}</div>
+                <div class="reason">Hotness {{ '%.3f'|format(row.hotness) }} • Readability {{ '%.0f'|format(row.readability) }} {{ row.readability_label }} • Confidence {{ '%.3f'|format(row.confidence) }}</div>
               </div>
             {% endfor %}
           {% else %}
@@ -695,13 +726,57 @@
                   <div class="symbol">{{ row.symbol }}</div>
                   <span class="pill avoid">{{ row.setup_grade }}</span>
                 </div>
-                <div class="reason">{{ row.reason }}</div>
+                <div class="reason">{{ row.reason }} • Readability {{ '%.0f'|format(row.readability) }} {{ row.readability_label }}</div>
               </div>
             {% endfor %}
           {% else %}
             <div class="reason">Nothing flagged as avoid.</div>
           {% endif %}
         </div>
+      </div>
+    </section>
+
+    <section class="card" style="margin-bottom: 22px;">
+      <div class="eyebrow">Live Intraday Heat</div>
+      <h2 style="margin-bottom: 12px;">5-Minute Scanner</h2>
+      {% if intraday_table %}
+        <table>
+          <thead>
+            <tr>
+              <th>Rank</th>
+              <th>Symbol</th>
+              <th>Setup</th>
+              <th>Score</th>
+              <th>Readability</th>
+              <th>Price</th>
+              <th>VWAP</th>
+              <th>Rel Vol</th>
+              <th>Stop Dist</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in intraday_table %}
+              <tr>
+                <td>{{ row.rank }}</td>
+                <td><strong>{{ row.symbol }}</strong></td>
+                <td>{{ row.setup }}</td>
+                <td>{{ '%.3f'|format(row.score) }}</td>
+                <td>{{ '%.0f'|format(row.readability) }} {{ row.readability_label }}</td>
+                <td>{{ '%.2f'|format(row.price) }}</td>
+                <td>{{ '%.2f'|format(row.vwap) }}</td>
+                <td>{{ '%.2f'|format(row.rel_volume) }}</td>
+                <td>{{ '%.2f'|format(row.stop_distance) }}</td>
+                <td>{{ row.reason }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="reason">No intraday data available from {{ intraday_provider }}.</div>
+      {% endif %}
+      <div class="footer-note">
+        Daily Heat shows the broader setup. Live Intraday Heat shows what is moving on the 5-minute tape right now.
       </div>
     </section>
 
@@ -716,6 +791,7 @@
             <th>Grade</th>
             <th>Hotness</th>
             <th>Confidence</th>
+            <th>Readability</th>
             <th>Signal</th>
             <th>Trend</th>
             <th>Breakout</th>
@@ -732,6 +808,7 @@
               <td>{{ row.setup_grade }}</td>
               <td>{{ '%.3f'|format(row.hotness) }}</td>
               <td>{{ '%.3f'|format(row.confidence) }}</td>
+              <td>{{ '%.0f'|format(row.readability) }} {{ row.readability_label }}</td>
               <td>{{ '%.3f'|format(row.signal_strength) }}</td>
               <td>{{ '%.3f'|format(row.trend_score) }}</td>
               <td>{{ '%.3f'|format(row.breakout_score) }}</td>
@@ -745,6 +822,11 @@
         This app surfaces clean candidates and noisy traps. It is a decision filter, not a guaranteed-profit oracle.
       </div>
     </section>
+  </div>
+  <div class="refresh-control" aria-label="Auto refresh controls">
+    <button type="button" id="refresh-slower" title="Refresh slower">-</button>
+    <div class="refresh-count" id="refresh-count">Refresh --</div>
+    <button type="button" id="refresh-faster" title="Refresh faster">+</button>
   </div>
   <script>
     const detailCards = {{ detail_cards_json|safe }};
@@ -796,6 +878,7 @@
       el.innerHTML = `
         <span class="pill ${cls}">${card.label}</span>
         <span class="pill">Grade ${card.setup_grade}</span>
+        <span class="pill">Readability ${card.readability.toFixed(0)} ${card.readability_label}</span>
         <span class="pill">1D ${card.change_1d_pct}%</span>
         <span class="pill">5D ${card.change_5d_pct}%</span>
       `;
@@ -885,6 +968,7 @@
       document.getElementById('detail-price').textContent = `$${card.close} • ${card.date}`;
       document.getElementById('box-hotness').textContent = card.hotness.toFixed(3);
       document.getElementById('box-confidence').textContent = card.confidence.toFixed(3);
+      document.getElementById('box-readability').textContent = `${card.readability.toFixed(0)} ${card.readability_label}`;
       document.getElementById('box-signal').textContent = card.signal_strength.toFixed(3);
       document.getElementById('box-trend').textContent = card.trend_score.toFixed(3);
       document.getElementById('box-breakout').textContent = card.breakout_score.toFixed(3);
@@ -907,6 +991,55 @@
       updateDetail(detailCards[0].symbol);
       window.addEventListener('resize', () => updateDetail(document.querySelector('.ticker-chip.active')?.dataset.symbol || detailCards[0].symbol));
     }
+
+    const refreshCount = document.getElementById('refresh-count');
+    const refreshSlower = document.getElementById('refresh-slower');
+    const refreshFaster = document.getElementById('refresh-faster');
+    const refreshSteps = [5, 10, 15, 30, 60, 120, 300];
+    const storedRefresh = Number(localStorage.getItem('marketScannerRefreshSeconds') || 30);
+    let refreshSeconds = refreshSteps.includes(storedRefresh) ? storedRefresh : 30;
+    let secondsLeft = refreshSeconds;
+
+    function formatRefresh(seconds) {
+      if (seconds >= 60) {
+        const mins = Math.floor(seconds / 60);
+        const secs = String(seconds % 60).padStart(2, '0');
+        return `${mins}:${secs}`;
+      }
+      return `${seconds}s`;
+    }
+
+    function setRefreshSeconds(nextSeconds) {
+      refreshSeconds = nextSeconds;
+      secondsLeft = refreshSeconds;
+      localStorage.setItem('marketScannerRefreshSeconds', String(refreshSeconds));
+      updateRefreshCount();
+    }
+
+    function updateRefreshCount() {
+      refreshCount.textContent = `Refresh ${formatRefresh(secondsLeft)} / ${formatRefresh(refreshSeconds)}`;
+    }
+
+    refreshFaster.addEventListener('click', () => {
+      const currentIndex = refreshSteps.indexOf(refreshSeconds);
+      setRefreshSeconds(refreshSteps[Math.max(0, currentIndex - 1)]);
+    });
+
+    refreshSlower.addEventListener('click', () => {
+      const currentIndex = refreshSteps.indexOf(refreshSeconds);
+      setRefreshSeconds(refreshSteps[Math.min(refreshSteps.length - 1, currentIndex + 1)]);
+    });
+
+    updateRefreshCount();
+    setInterval(() => {
+      secondsLeft -= 1;
+      if (secondsLeft <= 0) {
+        refreshCount.textContent = 'Refreshing...';
+        window.location.reload();
+        return;
+      }
+      updateRefreshCount();
+    }, 1000);
   </script>
 </body>
 </html>

@@ -3,3 +3,5 @@ jinja2
 pandas
 uvicorn[standard]
 yfinance
+pydantic>=2.5,<3
+cryptography>=42.0

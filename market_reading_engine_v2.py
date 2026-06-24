@@ -12,6 +12,51 @@ import numpy as np
 import pandas as pd
 
 
+_HTTP_JSON_CACHE: dict[str, tuple[pd.Timestamp, dict]] = {}
+
+
+def _cache_ttl_seconds() -> int:
+    raw = os.getenv("MARKET_DATA_CACHE_SECONDS", "20")
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 20
+
+
+def _http_timeout_seconds() -> int:
+    raw = os.getenv("MARKET_DATA_HTTP_TIMEOUT_SECONDS", "8")
+    try:
+        return max(3, int(raw))
+    except ValueError:
+        return 8
+
+
+def load_env_file(path: str | Path = ".env") -> None:
+    path = Path(path)
+    if not path.exists():
+        return
+
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+def _alpaca_credentials() -> tuple[Optional[str], Optional[str]]:
+    key = os.getenv("APCA_API_KEY_ID") or os.getenv("ALPACA_API_KEY_ID")
+    secret = os.getenv("APCA_API_SECRET_KEY") or os.getenv("ALPACA_API_SECRET_KEY")
+    return key, secret
+
+
+def _alpaca_feed(default: str = "sip") -> str:
+    return (os.getenv("ALPACA_FEED") or default).strip().lower() or default
+
+
 @dataclass
 class EngineConfig:
     lookback: int = 60
@@ -39,6 +84,14 @@ def _normalize(series: pd.Series) -> pd.Series:
     if std < 1e-12:
         return pd.Series(np.zeros(len(series)), index=series.index)
     return (series - float(series.mean())) / std
+
+
+def _readability_label(score: float) -> str:
+    if score >= 72.0:
+        return "CLEAN"
+    if score >= 48.0:
+        return "MIXED"
+    return "CHAOTIC"
 
 
 def load_ohlcv_csv(path: str | Path) -> pd.DataFrame:
@@ -236,23 +289,132 @@ def load_symbol_csv_dir(csv_dir: str | Path) -> dict[str, pd.DataFrame]:
     return symbol_to_df
 
 
-def _http_get_json(url: str, headers: Optional[dict[str, str]] = None) -> dict:
+def _http_get_json(url: str, headers: Optional[dict[str, str]] = None, cache_seconds: int | None = None) -> dict:
+    ttl = _cache_ttl_seconds() if cache_seconds is None else max(0, cache_seconds)
+    now = pd.Timestamp.now(tz="UTC")
+    if ttl > 0:
+        cached = _HTTP_JSON_CACHE.get(url)
+        if cached is not None:
+            fetched_at, payload = cached
+            if (now - fetched_at).total_seconds() <= ttl:
+                return payload
+
     req = Request(url, headers=headers or {})
-    with urlopen(req, timeout=20) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    with urlopen(req, timeout=_http_timeout_seconds()) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    if ttl > 0:
+        _HTTP_JSON_CACHE[url] = (now, payload)
+    return payload
+
+
+def _alpaca_headers() -> dict[str, str]:
+    key, secret = _alpaca_credentials()
+    if not key or not secret:
+        raise RuntimeError("Missing APCA_API_KEY_ID/APCA_API_SECRET_KEY or ALPACA_API_KEY_ID/ALPACA_API_SECRET_KEY in environment.")
+    return {
+        "APCA-API-KEY-ID": key,
+        "APCA-API-SECRET-KEY": secret,
+    }
+
+
+def _bars_to_df(bars: list[dict], utc: bool = False) -> pd.DataFrame:
+    df = pd.DataFrame(bars)
+    if df.empty:
+        return pd.DataFrame(columns=["Date", "Open", "High", "Low", "Close", "Volume"])
+    return pd.DataFrame(
+        {
+            "Date": pd.to_datetime(df["t"], utc=utc),
+            "Open": pd.to_numeric(df["o"], errors="coerce"),
+            "High": pd.to_numeric(df["h"], errors="coerce"),
+            "Low": pd.to_numeric(df["l"], errors="coerce"),
+            "Close": pd.to_numeric(df["c"], errors="coerce"),
+            "Volume": pd.to_numeric(df["v"], errors="coerce"),
+        }
+    ).dropna().sort_values("Date").reset_index(drop=True)
+
+
+def _fetch_alpaca_bars_payload(
+    symbols: list[str],
+    timeframe: str,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    feed: str,
+    limit: int = 10000,
+) -> dict:
+    normalized = sorted({symbol.upper() for symbol in symbols if symbol.strip()})
+    if not normalized:
+        return {}
+    all_bars: dict[str, list[dict]] = {symbol: [] for symbol in normalized}
+    page_token: str | None = None
+    while True:
+        params_dict = {
+            "symbols": ",".join(normalized),
+            "timeframe": timeframe,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "limit": limit,
+            "adjustment": "raw",
+            "feed": feed,
+            "sort": "asc",
+        }
+        if page_token:
+            params_dict["page_token"] = page_token
+        url = f"https://data.alpaca.markets/v2/stocks/bars?{urlencode(params_dict)}"
+        payload = _http_get_json(url, headers=_alpaca_headers())
+        for symbol, bars in payload.get("bars", {}).items():
+            all_bars.setdefault(symbol.upper(), []).extend(bars or [])
+        page_token = payload.get("next_page_token")
+        if not page_token:
+            return all_bars
+
+
+def fetch_alpaca_history_batch(
+    symbols: list[str],
+    timeframe: str = "1Day",
+    months: int = 6,
+    feed: Optional[str] = None,
+) -> dict[str, pd.DataFrame]:
+    feed = feed or _alpaca_feed()
+    end = pd.Timestamp.now(tz="UTC").normalize() + pd.Timedelta(days=1)
+    start = end - pd.Timedelta(days=30 * months)
+    payload = _fetch_alpaca_bars_payload(symbols, timeframe, start, end, feed)
+    symbol_to_df: dict[str, pd.DataFrame] = {}
+    for symbol in sorted({symbol.upper() for symbol in symbols}):
+        bars = payload.get(symbol, [])
+        if bars:
+            symbol_to_df[symbol] = _bars_to_df(bars)
+        else:
+            print(f"Skipping {symbol}: No Alpaca bars returned.")
+    return symbol_to_df
+
+
+def fetch_alpaca_intraday_batch(
+    symbols: list[str],
+    timeframe: str = "5Min",
+    days: int = 5,
+    feed: Optional[str] = None,
+) -> dict[str, pd.DataFrame]:
+    feed = feed or _alpaca_feed()
+    end = pd.Timestamp.now(tz="UTC").floor("min")
+    start = end - pd.Timedelta(days=max(days, 1) + 2)
+    payload = _fetch_alpaca_bars_payload(symbols, timeframe, start, end, feed)
+    symbol_to_df: dict[str, pd.DataFrame] = {}
+    for symbol in sorted({symbol.upper() for symbol in symbols}):
+        bars = payload.get(symbol, [])
+        if bars:
+            symbol_to_df[symbol] = _bars_to_df(bars, utc=True)
+        else:
+            print(f"Skipping {symbol}: No Alpaca intraday bars returned.")
+    return symbol_to_df
 
 
 def fetch_alpaca_symbol_history(
     symbol: str,
     timeframe: str = "1Day",
     months: int = 6,
-    feed: str = "iex",
+    feed: Optional[str] = None,
 ) -> pd.DataFrame:
-    key = os.getenv("APCA_API_KEY_ID")
-    secret = os.getenv("APCA_API_SECRET_KEY")
-    if not key or not secret:
-        raise RuntimeError("Missing APCA_API_KEY_ID or APCA_API_SECRET_KEY in environment.")
-
+    feed = feed or _alpaca_feed()
     end = pd.Timestamp.now(tz="UTC").normalize() + pd.Timedelta(days=1)
     start = end - pd.Timedelta(days=30 * months)
     params = urlencode(
@@ -268,28 +430,99 @@ def fetch_alpaca_symbol_history(
         }
     )
     url = f"https://data.alpaca.markets/v2/stocks/bars?{params}"
-    payload = _http_get_json(
-        url,
-        headers={
-            "APCA-API-KEY-ID": key,
-            "APCA-API-SECRET-KEY": secret,
-        },
-    )
+    payload = _http_get_json(url, headers=_alpaca_headers())
     bars = payload.get("bars", {}).get(symbol.upper(), [])
     if not bars:
         raise RuntimeError(f"No Alpaca bars returned for {symbol}.")
 
-    df = pd.DataFrame(bars)
-    return pd.DataFrame(
+    return _bars_to_df(bars)
+
+
+def fetch_alpaca_symbol_intraday(
+    symbol: str,
+    timeframe: str = "5Min",
+    days: int = 5,
+    feed: Optional[str] = None,
+) -> pd.DataFrame:
+    feed = feed or _alpaca_feed()
+    end = pd.Timestamp.now(tz="UTC")
+    start = end - pd.Timedelta(days=max(days, 1) + 2)
+    params = urlencode(
         {
-            "Date": pd.to_datetime(df["t"]),
-            "Open": pd.to_numeric(df["o"], errors="coerce"),
-            "High": pd.to_numeric(df["h"], errors="coerce"),
-            "Low": pd.to_numeric(df["l"], errors="coerce"),
-            "Close": pd.to_numeric(df["c"], errors="coerce"),
-            "Volume": pd.to_numeric(df["v"], errors="coerce"),
+            "symbols": symbol.upper(),
+            "timeframe": timeframe,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "limit": 10000,
+            "adjustment": "raw",
+            "feed": feed,
+            "sort": "asc",
         }
-    ).dropna().sort_values("Date").reset_index(drop=True)
+    )
+    url = f"https://data.alpaca.markets/v2/stocks/bars?{params}"
+    payload = _http_get_json(url, headers=_alpaca_headers())
+    bars = payload.get("bars", {}).get(symbol.upper(), [])
+    if not bars:
+        raise RuntimeError(f"No Alpaca intraday bars returned for {symbol}.")
+
+    return _bars_to_df(bars, utc=True)
+
+
+def fetch_yfinance_symbol_intraday(
+    symbol: str,
+    interval: str = "5m",
+) -> pd.DataFrame:
+    return fetch_yfinance_symbol_history(symbol, months=1, interval=interval).tail(5000).reset_index(drop=True)
+
+
+def fetch_intraday_watchlist(
+    symbols: list[str],
+    provider: str = "alpaca",
+    interval: str = "5m",
+    days: int = 5,
+    feed: Optional[str] = None,
+) -> dict[str, pd.DataFrame]:
+    feed = feed or _alpaca_feed()
+    alpaca_timeframes = {
+        "1m": "1Min",
+        "5m": "5Min",
+        "15m": "15Min",
+        "30m": "30Min",
+        "1h": "1Hour",
+    }
+    symbol_to_df: dict[str, pd.DataFrame] = {}
+    if provider == "alpaca":
+        timeframe = alpaca_timeframes.get(interval.lower(), interval)
+        try:
+            batch = fetch_alpaca_intraday_batch(symbols, timeframe=timeframe, days=days, feed=feed)
+        except Exception as exc:
+            print(f"Alpaca intraday batch unavailable: {exc}")
+            return {}
+        for symbol, df in batch.items():
+            if len(df) >= 20:
+                symbol_to_df[symbol] = df
+        missing_symbols = [symbol.upper() for symbol in symbols if symbol.upper() not in symbol_to_df]
+        if not missing_symbols:
+            return symbol_to_df
+    else:
+        missing_symbols = [symbol.upper() for symbol in symbols]
+
+    for symbol in missing_symbols:
+        symbol = symbol.upper()
+        try:
+            if provider == "alpaca":
+                timeframe = alpaca_timeframes.get(interval.lower(), interval)
+                df = fetch_alpaca_symbol_intraday(symbol, timeframe=timeframe, days=days, feed=feed)
+            elif provider == "yfinance":
+                df = fetch_yfinance_symbol_intraday(symbol, interval=interval)
+            else:
+                raise ValueError(f"Unsupported intraday provider: {provider}")
+        except Exception as exc:
+            print(f"Skipping {symbol}: {exc}")
+            continue
+        if len(df) >= 20:
+            symbol_to_df[symbol] = df
+    return symbol_to_df
 
 
 def fetch_polygon_symbol_history(
@@ -332,16 +565,35 @@ def fetch_live_watchlist(
     months: int = 6,
 ) -> dict[str, pd.DataFrame]:
     symbol_to_df: dict[str, pd.DataFrame] = {}
-    for symbol in symbols:
+    if provider == "alpaca":
+        try:
+            batch = fetch_alpaca_history_batch(symbols, months=months)
+        except Exception as exc:
+            print(f"Alpaca history batch unavailable: {exc}")
+            return {}
+        for symbol, df in batch.items():
+            if len(df) >= 80:
+                symbol_to_df[symbol] = df
+        missing_symbols = [symbol.upper() for symbol in symbols if symbol.upper() not in symbol_to_df]
+        if not missing_symbols:
+            return symbol_to_df
+    else:
+        missing_symbols = [symbol.upper() for symbol in symbols]
+
+    for symbol in missing_symbols:
         symbol = symbol.upper()
-        if provider == "alpaca":
-            df = fetch_alpaca_symbol_history(symbol, months=months)
-        elif provider == "polygon":
-            df = fetch_polygon_symbol_history(symbol, months=months)
-        elif provider == "finnhub":
-            df = fetch_finnhub_symbol_history(symbol, months=months)
-        else:
-            raise ValueError(f"Unsupported provider: {provider}")
+        try:
+            if provider == "alpaca":
+                df = fetch_alpaca_symbol_history(symbol, months=months)
+            elif provider == "polygon":
+                df = fetch_polygon_symbol_history(symbol, months=months)
+            elif provider == "finnhub":
+                df = fetch_finnhub_symbol_history(symbol, months=months)
+            else:
+                raise ValueError(f"Unsupported provider: {provider}")
+        except Exception as exc:
+            print(f"Skipping {symbol}: {exc}")
+            continue
         if len(df) >= 80:
             symbol_to_df[symbol] = df
     return symbol_to_df
@@ -375,7 +627,7 @@ def fetch_yfinance_symbol_history(
     rename_map = {}
     for col in df.columns:
         lower = str(col).lower()
-        if lower == "date":
+        if lower in {"date", "datetime"}:
             rename_map[col] = "Date"
         elif lower == "open":
             rename_map[col] = "Open"
@@ -552,6 +804,22 @@ class MarketReadingEngine:
             + 0.15 * volume_bonus
         ).clip(0.0, 1.0)
 
+        rel_atr = (out["atr_pct"] / out["atr_pct"].rolling(50).median().replace(0.0, np.nan)).replace([np.inf, -np.inf], np.nan)
+        volatility_quality = (1.0 - ((rel_atr.fillna(1.0) - 1.0).abs() / 1.5)).clip(0.0, 1.0)
+        volume_quality = (1.0 - ((out["volume_impulse"].fillna(1.0) - 1.0).abs() / 3.0)).clip(0.0, 1.0)
+        direction_quality = (out["signal_strength"] / (out["signal_strength"].rolling(50).quantile(0.85).replace(0.0, np.nan))).fillna(0.0).clip(0.0, 1.0)
+        out["readability"] = (
+            100.0
+            * (
+                0.35 * stability
+                + 0.25 * out["confidence"]
+                + 0.20 * volatility_quality
+                + 0.10 * volume_quality
+                + 0.10 * direction_quality
+            )
+        ).clip(0.0, 100.0)
+        out["readability_label"] = out["readability"].map(_readability_label)
+
         out["trade_ok"] = (
             (out["signal_strength"] >= cfg.min_signal_strength)
             & (out["confidence"] >= cfg.min_confidence)
@@ -579,6 +847,8 @@ class MarketReadingEngine:
             reasons.append("market too choppy")
         if pd.isna(row["atr_pct"]):
             reasons.append("not enough history")
+        if row["readability"] < 48.0:
+            reasons.append("structure chaotic")
 
         hotness = (
             0.45 * float(row["confidence"])
@@ -604,6 +874,8 @@ class MarketReadingEngine:
             "date": row["Date"],
             "label": row["trade_label"],
             "confidence": float(row["confidence"]),
+            "readability": float(row["readability"]),
+            "readability_label": row["readability_label"],
             "signal_strength": float(row["signal_strength"]),
             "trend_score": float(row["trend_score"]),
             "breakout_score": float(row["breakout_score"]),
@@ -641,6 +913,8 @@ class MarketReadingEngine:
                     "date": read["date"],
                     "label": read["label"],
                     "confidence": read["confidence"],
+                    "readability": read["readability"],
+                    "readability_label": read["readability_label"],
                     "signal_strength": read["signal_strength"],
                     "trend_score": read["trend_score"],
                     "breakout_score": read["breakout_score"],
@@ -668,6 +942,8 @@ class MarketReadingEngine:
                     "setup_grade",
                     "hotness",
                     "confidence",
+                    "readability",
+                    "readability_label",
                     "signal_strength",
                     "trend_score",
                     "breakout_score",
@@ -808,6 +1084,493 @@ class MarketReadingEngine:
         return equity_df, closed, summary
 
 
+def _regular_session(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out["Date"] = pd.to_datetime(out["Date"], utc=True).dt.tz_convert("America/New_York")
+    out["session_date"] = out["Date"].dt.date
+    out["session_time"] = out["Date"].dt.time
+    market_open = pd.Timestamp("09:30").time()
+    market_close = pd.Timestamp("16:00").time()
+    return out[(out["session_time"] >= market_open) & (out["session_time"] <= market_close)].copy()
+
+
+def market_bias_from_intraday(symbol_to_df: dict[str, pd.DataFrame]) -> Optional[float]:
+    scores = []
+    for symbol in ("SPY", "QQQ"):
+        df = symbol_to_df.get(symbol)
+        if df is None or df.empty:
+            continue
+        regular = _regular_session(df)
+        if regular.empty:
+            continue
+        latest_session = regular["session_date"].max()
+        today = regular[regular["session_date"] == latest_session].copy()
+        if len(today) < 4:
+            continue
+        typical = (today["High"] + today["Low"] + today["Close"]) / 3.0
+        vwap = (typical * today["Volume"]).cumsum() / today["Volume"].cumsum().replace(0.0, np.nan)
+        price = float(today["Close"].iloc[-1])
+        trend = float(price / float(today["Close"].tail(4).iloc[0]) - 1.0)
+        scores.append((1.0 if price > float(vwap.iloc[-1]) else -1.0) + (0.5 if trend > 0 else -0.5))
+    if not scores:
+        return None
+    return float(np.mean(scores))
+
+
+def daytrade_read(
+    symbol: str,
+    df: pd.DataFrame,
+    market_bias: Optional[float] = None,
+    opening_range_minutes: int = 15,
+    min_rel_volume: float = 0.9,
+) -> dict:
+    regular = _regular_session(df)
+    if regular.empty:
+        raise RuntimeError(f"No regular-session intraday bars for {symbol}.")
+
+    latest_session = regular["session_date"].max()
+    today = regular[regular["session_date"] == latest_session].copy()
+    history = regular[regular["session_date"] < latest_session].copy()
+    if len(today) < 4:
+        raise RuntimeError(f"Not enough current-session bars for {symbol}.")
+
+    typical = (today["High"] + today["Low"] + today["Close"]) / 3.0
+    today["vwap"] = (typical * today["Volume"]).cumsum() / today["Volume"].cumsum().replace(0.0, np.nan)
+    latest = today.iloc[-1]
+    price = float(latest["Close"])
+    vwap = float(latest["vwap"])
+
+    open_time = pd.Timestamp(str(latest_session) + " 09:30", tz="America/New_York")
+    range_end = open_time + pd.Timedelta(minutes=opening_range_minutes)
+    opening = today[(today["Date"] >= open_time) & (today["Date"] < range_end)]
+    if opening.empty:
+        opening = today.head(max(opening_range_minutes // 5, 1))
+    or_high = float(opening["High"].max())
+    or_low = float(opening["Low"].min())
+
+    latest_minute = latest["Date"].hour * 60 + latest["Date"].minute
+    today_volume = float(today["Volume"].sum())
+    rel_volume = 1.0
+    if not history.empty:
+        history = history.copy()
+        history["minute_of_day"] = history["Date"].dt.hour * 60 + history["Date"].dt.minute
+        comparable = history[history["minute_of_day"] <= latest_minute]
+        prior_by_session = comparable.groupby("session_date")["Volume"].sum()
+        if not prior_by_session.empty and float(prior_by_session.mean()) > 0:
+            rel_volume = today_volume / float(prior_by_session.mean())
+
+    recent = today.tail(4)
+    trend_pct = float(price / float(recent["Close"].iloc[0]) - 1.0) if len(recent) >= 2 else 0.0
+    range_width = max(or_high - or_low, price * 0.002)
+    above_vwap = price > vwap
+    below_vwap = price < vwap
+    breaks_high = price > or_high
+    breaks_low = price < or_low
+    near_high = price >= or_high - 0.25 * range_width
+    near_low = price <= or_low + 0.25 * range_width
+    aligned_long = market_bias is None or market_bias >= 0
+    aligned_short = market_bias is None or market_bias <= 0
+
+    setup = "NO_TRADE"
+    reasons = []
+    direction_score = 0.0
+    if breaks_high and above_vwap and rel_volume >= min_rel_volume and trend_pct >= -0.001 and aligned_long:
+        setup = "ALERT_LONG"
+        reasons.append("opening range break above VWAP")
+        direction_score = 1.0
+    elif breaks_low and below_vwap and rel_volume >= min_rel_volume and trend_pct <= 0.001 and aligned_short:
+        setup = "ALERT_SHORT"
+        reasons.append("opening range break below VWAP")
+        direction_score = -1.0
+    elif near_high and above_vwap and aligned_long:
+        setup = "LONG_WATCH"
+        reasons.append("near range high above VWAP")
+        direction_score = 0.5
+    elif near_low and below_vwap and aligned_short:
+        setup = "SHORT_WATCH"
+        reasons.append("near range low below VWAP")
+        direction_score = -0.5
+    else:
+        if rel_volume < min_rel_volume:
+            reasons.append("relative volume is light")
+        elif market_bias is not None and abs(market_bias) < 0.25:
+            reasons.append("market ETFs are mixed")
+        else:
+            reasons.append("no clean opening range setup")
+
+    if rel_volume >= 1.5:
+        reasons.append("strong relative volume")
+    if market_bias is not None and abs(market_bias) >= 1.0:
+        reasons.append("market aligned")
+
+    setup_score = (
+        abs(direction_score) * 2.0
+        + min(rel_volume, 3.0) * 0.35
+        + min(abs(trend_pct) * 100.0, 1.0) * 0.25
+        + (0.25 if "ALERT" in setup else 0.0)
+    )
+    stop_distance = max(abs(price - vwap), range_width * 0.35)
+    trend_quality = max(0.0, 1.0 - min(abs(trend_pct) / 0.006, 1.0))
+    volume_quality = max(0.0, 1.0 - min(abs(rel_volume - 1.0) / 2.5, 1.0))
+    vwap_distance_quality = max(0.0, 1.0 - min(abs(price - vwap) / max(range_width * 1.5, 1e-12), 1.0))
+    structure_quality = 1.0 if "ALERT" in setup else (0.65 if "WATCH" in setup else 0.35)
+    readability = 100.0 * (
+        0.35 * structure_quality
+        + 0.25 * volume_quality
+        + 0.20 * trend_quality
+        + 0.20 * vwap_distance_quality
+    )
+
+    return {
+        "symbol": symbol.upper(),
+        "time": latest["Date"],
+        "setup": setup,
+        "score": setup_score,
+        "readability": readability,
+        "readability_label": _readability_label(readability),
+        "price": price,
+        "vwap": vwap,
+        "or_high": or_high,
+        "or_low": or_low,
+        "rel_volume": rel_volume,
+        "trend_pct": trend_pct,
+        "stop_distance": stop_distance,
+        "reason": ", ".join(reasons),
+    }
+
+
+def daytrade_table(
+    symbol_to_df: dict[str, pd.DataFrame],
+    opening_range_minutes: int = 15,
+    min_rel_volume: float = 0.9,
+) -> pd.DataFrame:
+    bias = market_bias_from_intraday(symbol_to_df)
+    rows = []
+    for symbol, df in symbol_to_df.items():
+        try:
+            rows.append(
+                daytrade_read(
+                    symbol,
+                    df,
+                    market_bias=bias,
+                    opening_range_minutes=opening_range_minutes,
+                    min_rel_volume=min_rel_volume,
+                )
+            )
+        except Exception as exc:
+            print(f"Skipping {symbol}: {exc}")
+    table = pd.DataFrame(rows)
+    if table.empty:
+        return table
+    priority = {"ALERT_LONG": 0, "ALERT_SHORT": 0, "LONG_WATCH": 1, "SHORT_WATCH": 1, "NO_TRADE": 2}
+    table["priority"] = table["setup"].map(priority).fillna(3)
+    table = table.sort_values(["priority", "score", "rel_volume"], ascending=[True, False, False])
+    table["rank"] = np.arange(1, len(table) + 1)
+    return table[
+        [
+            "rank",
+            "symbol",
+            "time",
+            "setup",
+            "score",
+            "readability",
+            "readability_label",
+            "price",
+            "vwap",
+            "or_high",
+            "or_low",
+            "rel_volume",
+            "trend_pct",
+            "stop_distance",
+            "reason",
+        ]
+    ]
+
+
+def market_is_open_now(now: Optional[pd.Timestamp] = None) -> bool:
+    current = now or pd.Timestamp.now(tz="America/New_York")
+    if current.tzinfo is None:
+        current = current.tz_localize("America/New_York")
+    else:
+        current = current.tz_convert("America/New_York")
+    if current.weekday() >= 5:
+        return False
+    market_open = current.normalize() + pd.Timedelta(hours=9, minutes=30)
+    market_close = current.normalize() + pd.Timedelta(hours=16)
+    return bool(market_open <= current <= market_close)
+
+
+def append_paper_log(path: str | Path, table: pd.DataFrame) -> int:
+    alerts = table[table["setup"].isin(["ALERT_LONG", "ALERT_SHORT"])].copy()
+    if alerts.empty:
+        return 0
+
+    log_path = Path(path)
+    if log_path.parent != Path("."):
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+    alerts.insert(0, "logged_at", pd.Timestamp.now(tz="America/New_York").isoformat())
+    alerts["side"] = np.where(alerts["setup"] == "ALERT_LONG", "LONG", "SHORT")
+    alerts["entry_price"] = alerts["price"]
+    alerts["stop_price"] = np.where(
+        alerts["side"] == "LONG",
+        alerts["entry_price"] - alerts["stop_distance"],
+        alerts["entry_price"] + alerts["stop_distance"],
+    )
+    alerts["target_1r"] = np.where(
+        alerts["side"] == "LONG",
+        alerts["entry_price"] + alerts["stop_distance"],
+        alerts["entry_price"] - alerts["stop_distance"],
+    )
+    alerts["target_2r"] = np.where(
+        alerts["side"] == "LONG",
+        alerts["entry_price"] + 2.0 * alerts["stop_distance"],
+        alerts["entry_price"] - 2.0 * alerts["stop_distance"],
+    )
+    alerts["alert_key"] = alerts["time"].astype(str) + "|" + alerts["symbol"].astype(str) + "|" + alerts["setup"].astype(str)
+    if log_path.exists():
+        existing = pd.read_csv(log_path)
+        if "alert_key" in existing.columns:
+            existing_keys = set(existing["alert_key"].dropna().astype(str))
+            alerts = alerts[~alerts["alert_key"].astype(str).isin(existing_keys)].copy()
+            if alerts.empty:
+                return 0
+    cols = [
+        "alert_key",
+        "logged_at",
+        "time",
+        "symbol",
+        "side",
+        "setup",
+        "entry_price",
+        "stop_price",
+        "target_1r",
+        "target_2r",
+        "score",
+        "rel_volume",
+        "trend_pct",
+        "vwap",
+        "or_high",
+        "or_low",
+        "reason",
+    ]
+    alerts[cols].to_csv(log_path, mode="a", header=not log_path.exists(), index=False)
+    return int(len(alerts))
+
+
+def _r_multiple(side: str, entry: float, price: float, risk: float) -> float:
+    if risk <= 0:
+        return 0.0
+    if side == "LONG":
+        return (price - entry) / risk
+    return (entry - price) / risk
+
+
+def evaluate_alert_outcome(row: pd.Series, df: pd.DataFrame) -> dict:
+    side = str(row["side"]).upper()
+    entry_time = pd.Timestamp(row["time"])
+    if entry_time.tzinfo is None:
+        entry_time = entry_time.tz_localize("America/New_York")
+    else:
+        entry_time = entry_time.tz_convert("America/New_York")
+
+    entry = float(row["entry_price"])
+    stop = float(row["stop_price"])
+    target_1r = float(row["target_1r"])
+    target_2r = float(row["target_2r"])
+    risk = abs(entry - stop)
+    if risk <= 0:
+        return {
+            "outcome": "invalid_risk",
+            "exit_time": "",
+            "exit_price": np.nan,
+            "pnl_r": 0.0,
+            "max_favorable_r": 0.0,
+            "max_adverse_r": 0.0,
+            "bars_observed": 0,
+        }
+
+    regular = _regular_session(df)
+    session = regular[regular["session_date"] == entry_time.date()].copy()
+    future = session[session["Date"] > entry_time].copy()
+    if future.empty:
+        outcome = "too_late_to_evaluate" if entry_time.time() >= pd.Timestamp("15:55").time() else "pending"
+        return {
+            "outcome": outcome,
+            "exit_time": "",
+            "exit_price": np.nan,
+            "pnl_r": 0.0,
+            "max_favorable_r": 0.0,
+            "max_adverse_r": 0.0,
+            "bars_observed": 0,
+        }
+
+    max_favorable_r = 0.0
+    max_adverse_r = 0.0
+    for _, bar in future.iterrows():
+        high = float(bar["High"])
+        low = float(bar["Low"])
+        if side == "LONG":
+            max_favorable_r = max(max_favorable_r, (high - entry) / risk)
+            max_adverse_r = max(max_adverse_r, (entry - low) / risk)
+            stop_hit = low <= stop
+            target_1_hit = high >= target_1r
+            target_2_hit = high >= target_2r
+            if stop_hit and (target_1_hit or target_2_hit):
+                return {
+                    "outcome": "ambiguous_stop_first",
+                    "exit_time": bar["Date"],
+                    "exit_price": stop,
+                    "pnl_r": -1.0,
+                    "max_favorable_r": max_favorable_r,
+                    "max_adverse_r": max_adverse_r,
+                    "bars_observed": int(len(future[future["Date"] <= bar["Date"]])),
+                }
+            if stop_hit:
+                return {
+                    "outcome": "hit_stop",
+                    "exit_time": bar["Date"],
+                    "exit_price": stop,
+                    "pnl_r": -1.0,
+                    "max_favorable_r": max_favorable_r,
+                    "max_adverse_r": max_adverse_r,
+                    "bars_observed": int(len(future[future["Date"] <= bar["Date"]])),
+                }
+            if target_2_hit:
+                return {
+                    "outcome": "hit_2r",
+                    "exit_time": bar["Date"],
+                    "exit_price": target_2r,
+                    "pnl_r": 2.0,
+                    "max_favorable_r": max_favorable_r,
+                    "max_adverse_r": max_adverse_r,
+                    "bars_observed": int(len(future[future["Date"] <= bar["Date"]])),
+                }
+            if target_1_hit:
+                return {
+                    "outcome": "hit_1r",
+                    "exit_time": bar["Date"],
+                    "exit_price": target_1r,
+                    "pnl_r": 1.0,
+                    "max_favorable_r": max_favorable_r,
+                    "max_adverse_r": max_adverse_r,
+                    "bars_observed": int(len(future[future["Date"] <= bar["Date"]])),
+                }
+        else:
+            max_favorable_r = max(max_favorable_r, (entry - low) / risk)
+            max_adverse_r = max(max_adverse_r, (high - entry) / risk)
+            stop_hit = high >= stop
+            target_1_hit = low <= target_1r
+            target_2_hit = low <= target_2r
+            if stop_hit and (target_1_hit or target_2_hit):
+                return {
+                    "outcome": "ambiguous_stop_first",
+                    "exit_time": bar["Date"],
+                    "exit_price": stop,
+                    "pnl_r": -1.0,
+                    "max_favorable_r": max_favorable_r,
+                    "max_adverse_r": max_adverse_r,
+                    "bars_observed": int(len(future[future["Date"] <= bar["Date"]])),
+                }
+            if stop_hit:
+                return {
+                    "outcome": "hit_stop",
+                    "exit_time": bar["Date"],
+                    "exit_price": stop,
+                    "pnl_r": -1.0,
+                    "max_favorable_r": max_favorable_r,
+                    "max_adverse_r": max_adverse_r,
+                    "bars_observed": int(len(future[future["Date"] <= bar["Date"]])),
+                }
+            if target_2_hit:
+                return {
+                    "outcome": "hit_2r",
+                    "exit_time": bar["Date"],
+                    "exit_price": target_2r,
+                    "pnl_r": 2.0,
+                    "max_favorable_r": max_favorable_r,
+                    "max_adverse_r": max_adverse_r,
+                    "bars_observed": int(len(future[future["Date"] <= bar["Date"]])),
+                }
+            if target_1_hit:
+                return {
+                    "outcome": "hit_1r",
+                    "exit_time": bar["Date"],
+                    "exit_price": target_1r,
+                    "pnl_r": 1.0,
+                    "max_favorable_r": max_favorable_r,
+                    "max_adverse_r": max_adverse_r,
+                    "bars_observed": int(len(future[future["Date"] <= bar["Date"]])),
+                }
+
+    last = future.iloc[-1]
+    exit_price = float(last["Close"])
+    return {
+        "outcome": "eod_exit" if last["Date"].time() >= pd.Timestamp("15:55").time() else "pending",
+        "exit_time": last["Date"],
+        "exit_price": exit_price,
+        "pnl_r": _r_multiple(side, entry, exit_price, risk),
+        "max_favorable_r": max_favorable_r,
+        "max_adverse_r": max_adverse_r,
+        "bars_observed": int(len(future)),
+    }
+
+
+def evaluate_paper_log(
+    path: str | Path,
+    provider: str = "alpaca",
+    interval: str = "5m",
+    days: int = 10,
+    feed: str = "iex",
+) -> tuple[pd.DataFrame, dict]:
+    log_path = Path(path)
+    if not log_path.exists():
+        raise RuntimeError(f"Paper log does not exist: {log_path}")
+
+    log = pd.read_csv(log_path)
+    required = {"time", "symbol", "side", "entry_price", "stop_price", "target_1r", "target_2r"}
+    missing = required - set(log.columns)
+    if missing:
+        raise RuntimeError(f"Paper log is missing required columns: {sorted(missing)}")
+
+    symbols = sorted(log["symbol"].dropna().astype(str).str.upper().unique())
+    symbol_to_df = fetch_intraday_watchlist(symbols, provider=provider, interval=interval, days=days, feed=feed)
+    outcomes = []
+    for _, row in log.iterrows():
+        symbol = str(row["symbol"]).upper()
+        df = symbol_to_df.get(symbol)
+        if df is None or df.empty:
+            outcomes.append(
+                {
+                    "outcome": "missing_bars",
+                    "exit_time": "",
+                    "exit_price": np.nan,
+                    "pnl_r": 0.0,
+                    "max_favorable_r": 0.0,
+                    "max_adverse_r": 0.0,
+                    "bars_observed": 0,
+                }
+            )
+            continue
+        outcomes.append(evaluate_alert_outcome(row, df))
+
+    outcome_df = pd.DataFrame(outcomes)
+    evaluated = pd.concat([log.drop(columns=[c for c in outcome_df.columns if c in log.columns], errors="ignore"), outcome_df], axis=1)
+    resolved = evaluated[evaluated["outcome"].isin(["hit_stop", "hit_1r", "hit_2r", "ambiguous_stop_first", "eod_exit"])]
+    wins = resolved[resolved["pnl_r"] > 0]
+    losses = resolved[resolved["pnl_r"] < 0]
+    summary = {
+        "alerts": int(len(evaluated)),
+        "resolved": int(len(resolved)),
+        "pending": int((evaluated["outcome"] == "pending").sum()),
+        "wins": int(len(wins)),
+        "losses": int(len(losses)),
+        "win_rate_pct": 100.0 * float(len(wins) / len(resolved)) if len(resolved) else 0.0,
+        "total_r": float(resolved["pnl_r"].sum()) if len(resolved) else 0.0,
+        "expectancy_r": float(resolved["pnl_r"].mean()) if len(resolved) else 0.0,
+    }
+    return evaluated, summary
+
+
 def _format_latest(reading: dict) -> str:
     reasons = ", ".join(reading["reasons"])
     return (
@@ -836,6 +1599,8 @@ def _print_bucket(title: str, table: pd.DataFrame, limit: int = 3) -> None:
         "hotness",
         "confidence",
         "signal_strength",
+        "readability",
+        "readability_label",
         "suggested_shares",
         "reason",
     ]
@@ -853,11 +1618,84 @@ if __name__ == "__main__":
     parser.add_argument("--export-csv", type=str, default=None, help="Optional path to export the hotness leaderboard as CSV.")
     parser.add_argument("--bucketed", action="store_true", help="Print Best Longs / Best Shorts / Avoid buckets.")
     parser.add_argument("--synthetic", action="store_true", help="Use the built-in synthetic basket instead of yfinance.")
+    parser.add_argument("--provider", choices=["yfinance", "alpaca"], default="yfinance", help="Data provider for watchlist scans.")
+    parser.add_argument("--feed", default=_alpaca_feed(), help="Alpaca market-data feed, such as sip or iex.")
+    parser.add_argument("--env-file", default=".env", help="Optional .env file containing API keys.")
+    parser.add_argument("--daytrade", action="store_true", help="Run an intraday VWAP/opening-range scanner instead of daily hotness.")
+    parser.add_argument("--interval", default="5m", help="Intraday bar interval, such as 1m, 5m, or 15m.")
+    parser.add_argument("--days", type=int, default=5, help="How many recent calendar days to fetch for intraday scans.")
+    parser.add_argument("--opening-range-minutes", type=int, default=15, help="Opening range window for daytrade scans.")
+    parser.add_argument("--only-alerts", action="store_true", help="Only print ALERT_LONG and ALERT_SHORT rows for daytrade scans.")
+    parser.add_argument("--min-rel-volume", type=float, default=0.9, help="Minimum relative volume required for daytrade alerts.")
+    parser.add_argument("--market-hours-only", action="store_true", help="Skip daytrade scans outside regular U.S. market hours.")
+    parser.add_argument("--paper-log", type=str, default=None, help="Append daytrade alerts to a paper-trade CSV log.")
+    parser.add_argument("--evaluate-paper-log", type=str, default=None, help="Evaluate a paper-trade CSV log against later intraday bars.")
+    parser.add_argument("--evaluated-log", type=str, default=None, help="Optional output path for evaluated paper log. Defaults to overwriting --evaluate-paper-log.")
     parser.add_argument("--tail", type=int, default=10, help="How many recent readings to print.")
     args = parser.parse_args()
 
+    load_env_file(args.env_file)
     engine = MarketReadingEngine()
-    if args.csv_dir:
+    if args.evaluate_paper_log:
+        evaluated, summary = evaluate_paper_log(
+            args.evaluate_paper_log,
+            provider=args.provider,
+            interval=args.interval,
+            days=args.days,
+            feed=args.feed,
+        )
+        output_path = args.evaluated_log or args.evaluate_paper_log
+        evaluated.to_csv(output_path, index=False)
+        print("Paper log evaluation:")
+        print(summary)
+        print(f"\nWrote evaluated log to: {output_path}")
+        display_cols = [
+            "time",
+            "symbol",
+            "side",
+            "entry_price",
+            "outcome",
+            "exit_price",
+            "pnl_r",
+            "max_favorable_r",
+            "max_adverse_r",
+        ]
+        cols = [c for c in display_cols if c in evaluated.columns]
+        if cols:
+            print("\nRecent evaluated alerts:")
+            print(evaluated.tail(args.tail)[cols].to_string(index=False))
+    elif args.daytrade:
+        if args.market_hours_only and not market_is_open_now():
+            print("Market is closed. Skipping daytrade scan because --market-hours-only is set.")
+            raise SystemExit(0)
+        symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+        symbol_to_df = fetch_intraday_watchlist(
+            symbols,
+            provider=args.provider,
+            interval=args.interval,
+            days=args.days,
+            feed=args.feed,
+        )
+        table = daytrade_table(
+            symbol_to_df,
+            opening_range_minutes=args.opening_range_minutes,
+            min_rel_volume=args.min_rel_volume,
+        )
+        if args.paper_log and not table.empty:
+            logged_count = append_paper_log(args.paper_log, table)
+            if logged_count:
+                print(f"Appended {logged_count} alert(s) to paper log: {args.paper_log}")
+        if args.only_alerts and not table.empty:
+            table = table[table["setup"].isin(["ALERT_LONG", "ALERT_SHORT"])].copy()
+        print(f"{args.provider} intraday daytrade scanner ({args.interval} bars):")
+        if table.empty:
+            print("No usable intraday data returned.")
+        else:
+            print(table.to_string(index=False))
+        if args.export_csv and not table.empty:
+            table.to_csv(args.export_csv, index=False)
+            print(f"\nExported daytrade scan to: {args.export_csv}")
+    elif args.csv_dir:
         csv_dir = Path(args.csv_dir)
         symbol_to_df = load_symbol_csv_dir(csv_dir)
         table = engine.hotness_table(symbol_to_df)
@@ -900,10 +1738,12 @@ if __name__ == "__main__":
         symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
         if args.synthetic:
             symbol_to_df = make_synthetic_market_universe(symbols)
+        elif args.provider == "alpaca":
+            symbol_to_df = fetch_live_watchlist(symbols, provider="alpaca", months=args.months)
         else:
             symbol_to_df = fetch_yfinance_watchlist(symbols, months=args.months)
         table = engine.hotness_table(symbol_to_df)
-        print(f"{'Synthetic' if args.synthetic else 'yfinance'} hotness leaderboard:")
+        print(f"{'Synthetic' if args.synthetic else args.provider} hotness leaderboard:")
         print(table.to_string(index=False))
         if args.bucketed and not table.empty:
             _print_bucket("Best Longs", table[table["label"] == "LONG"])
