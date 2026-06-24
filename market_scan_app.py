@@ -772,20 +772,25 @@ def _fetch_intraday_table(symbol_list: list[str]) -> tuple[pd.DataFrame, str]:
     if provider != "alpaca":
         return pd.DataFrame(columns=INTRADAY_TABLE_COLUMNS), "unavailable"
     interval = os.environ.get("INTRADAY_SCAN_INTERVAL", "1m")
-    try:
-        symbol_to_df = fetch_intraday_watchlist(
-            symbol_list,
-            provider="alpaca",
-            interval=interval,
-            days=5,
-            feed=ALPACA_FEED,
-        )
-        table = daytrade_table(symbol_to_df)
-    except Exception:
-        return pd.DataFrame(columns=INTRADAY_TABLE_COLUMNS), "unavailable"
-    if table.empty:
-        table = pd.DataFrame(columns=INTRADAY_TABLE_COLUMNS)
-    return table, "alpaca"
+    # Try the configured feed first, then fall back to the free "iex" feed so
+    # intraday / Raw Heat isn't empty when "sip" (paid) isn't on the account.
+    feeds = [ALPACA_FEED] + (["iex"] if ALPACA_FEED != "iex" else [])
+    for feed in feeds:
+        try:
+            symbol_to_df = fetch_intraday_watchlist(
+                symbol_list,
+                provider="alpaca",
+                interval=interval,
+                days=5,
+                feed=feed,
+            )
+            table = daytrade_table(symbol_to_df)
+        except Exception as exc:  # noqa: BLE001
+            print(f"intraday fetch failed on feed={feed}: {exc}")
+            continue
+        if not table.empty:
+            return table, f"alpaca_{feed}"
+    return pd.DataFrame(columns=INTRADAY_TABLE_COLUMNS), "unavailable"
 
 
 def _split_reasons(reason: str | None) -> list[str]:
